@@ -14,13 +14,28 @@ def _print(token_list):
     else:
         print(*[eval_value(token) for token in token_list])
 
+def _if(token_list):
+    global current_line
+
+    # If 0 tokens, pop a value from the stack, skip line if true
+    # If 1 token, evaluate, skip line if true
+    num_tokens = len(token_list)
+    if num_tokens > 1:
+        raise ValueError
+    truth = (num_tokens == 0 and stack.pop()) or \
+            (num_tokens == 1 and eval_value(token_list[0]))
+
+    if truth:
+        # Skip next line
+        current_line += 1
+
 def _set(token_list):
     # If 1 token, pop from stack and place in var
     # If 2 tokens, evaluate and place in var
     num_tokens = len(token_list)
     if num_tokens == 1:
         result = stack.pop()
-        scope[eval_keyword(token_list[1])] = result
+        scope[eval_keyword(token_list[0])] = result
     elif num_tokens == 2:
         result = eval_value(token_list[0])
         scope[eval_keyword(token_list[1])] = result
@@ -29,12 +44,12 @@ def _set(token_list):
 
 def _pop(token_list):
     # If 0 tokens, pop from stack and discard
-    # If 1 token, evaluate and place in var (equivalent to assign)
+    # If 1 token, evaluate and place in var (equivalent to set)
     num_tokens = len(token_list)
     if num_tokens == 0:
         stack.pop()
     elif num_tokens == 1:
-        scope[eval_keyword(token_list[1])] = stack.pop()
+        scope[eval_keyword(token_list[0])] = stack.pop()
     else:
         raise ValueError
 
@@ -45,10 +60,19 @@ def _push(token_list):
     values = [eval_value(token) for token in token_list]
     stack += values
 
+def _dup(token_list):
+    # Requires 0 token, duplicates item on top of stack
+    stack.append(stack[-1])
+
+def _swap(token_list):
+    global stack
+
+    # Requires 0 tokens, swaps top 2 items on stack
+    stack += [stack.pop(), stack.pop()]
+
 def _label(token_list):
-    # Requires 1 token, name of label to set
-    label_name = '_' + eval_keyword(token_list[0])
-    labels[label_name] = current_line
+    # Labels are parsed along with file
+    pass
 
 def _goto(token_list):
     global current_line
@@ -62,11 +86,23 @@ def _input(token_list):
     # If 1 token, accept input and place in var
     num_tokens = len(token_list)
     if num_tokens == 0:
-        result = input()
+        result = input('> ')
         stack.append(result)
     elif num_tokens == 1:
-        result = input()
+        result = input('> ')
         scope[eval_keyword(token_list[1])] = result
+    else:
+        raise ValueError
+
+def _exit(token_list):
+    # If 0 tokens, exit
+    # If 1 tokens, print value and exit
+    num_tokens = len(token_list)
+    if num_tokens == 0:
+        sys.exit(0)
+    elif num_tokens == 1:
+        print(eval_value(token_list[0]))
+        sys.exit(0)
     else:
         raise ValueError
 
@@ -75,12 +111,15 @@ def eval_value(token):
     if not token or token[0] is None:
         return eval_number(token)
 
-    value_type = eval_keyword(token[0])
-    if value_type == '#':
-        return eval_list(token)
-    elif value_type == '"':
-        return eval_string(token)
-    else:
+    try:
+        value_type = eval_keyword(token[0])
+        if value_type == '#':
+            return eval_list(token)
+        elif value_type == '"':
+            return eval_string(token)
+    except KeyError:
+        pass
+    finally:
         return eval_variable(token)
 
 def eval_list(token):
@@ -127,7 +166,7 @@ def interpret_type_cast(t, token_list):
     # If 0 tokens, cast from stack then replace
     # If 1 token, cast then place on stack
     # If 2 tokens, cast then place in var
-    num_tokens = token_list
+    num_tokens = len(token_list)
     if num_tokens == 0:
         result = t(stack.pop())
         stack.append(result)
@@ -173,9 +212,18 @@ def interpret_binary_op(op, token_list):
         raise ValueError
 
 def interpret_line(token_list):
-    statement = eval_keyword(token_list[0])
-    if statement in reserved_functions:
-        reserved_functions[statement](token_list[1:])
+    try:
+        statement = eval_keyword(token_list[0])
+        if statement in reserved_functions:
+            reserved_functions[statement](token_list[1:])
+        elif statement in type_casts:
+            interpret_type_cast(type_casts[statement], token_list[1:])
+        elif statement in unary_operators:
+            interpret_unary_op(unary_operators[statement], token_list[1:])
+        elif statement in binary_operators:
+            interpret_binary_op(binary_operators[statement], token_list[1:])
+    except TypeError:
+        stack.append(eval_value(token_list[0]))
 
 def interpret_lines(line_list):
     global current_line
@@ -191,7 +239,7 @@ def read_lines(file):
     with open(file) as f:
         for line in f:
             line = line.strip()
-            if not line:
+            if not line or line[0] == '#':
                 continue
             line = f'[{line}]'
             line = line.replace('] [', '], [')
@@ -211,10 +259,18 @@ if __name__ == '__main__':
         print('USAGE: nonescript <filename> [args]')
         sys.exit(0)
 
+    lines = read_lines(file)
+
     current_line = 0
-    labels = {}
     scope = {}
     stack = sys.argv[2:] if len(sys.argv) > 2 else []
+    labels = {}
+    for line_num, line in enumerate(lines):
+        try:
+            if eval_keyword(line[0]) == 'label':
+                labels['_' + eval_keyword(line[1])] = line_num
+        except TypeError:
+            pass
 
     functions_list = inspect.getmembers(sys.modules['__main__'], inspect.isfunction)
     reserved_functions = {f[0][1:]: f[1] for f in functions_list if f[0].startswith('_') and not f[0].startswith('__')}
@@ -246,5 +302,4 @@ if __name__ == '__main__':
         'pow': operator.pow
     }
 
-    lines = read_lines(file)
     interpret_lines(lines)
