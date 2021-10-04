@@ -1,0 +1,250 @@
+#!/opt/anaconda3/bin/python
+
+import sys
+import operator
+import inspect
+import json
+
+def _print(token_list):
+    # If 0 tokens, pop from stack and print
+    # If 1+ tokens, evaluate and print each token
+    num_tokens = len(token_list)
+    if num_tokens == 0:
+        print(stack.pop())
+    else:
+        print(*[eval_value(token) for token in token_list])
+
+def _set(token_list):
+    # If 1 token, pop from stack and place in var
+    # If 2 tokens, evaluate and place in var
+    num_tokens = len(token_list)
+    if num_tokens == 1:
+        result = stack.pop()
+        scope[eval_keyword(token_list[1])] = result
+    elif num_tokens == 2:
+        result = eval_value(token_list[0])
+        scope[eval_keyword(token_list[1])] = result
+    else:
+        raise ValueError
+
+def _pop(token_list):
+    # If 0 tokens, pop from stack and discard
+    # If 1 token, evaluate and place in var (equivalent to assign)
+    num_tokens = len(token_list)
+    if num_tokens == 0:
+        stack.pop()
+    elif num_tokens == 1:
+        scope[eval_keyword(token_list[1])] = stack.pop()
+    else:
+        raise ValueError
+
+def _push(token_list):
+    global stack
+
+    # Push all token values onto stack in given order
+    values = [eval_value(token) for token in token_list]
+    stack += values
+
+def _label(token_list):
+    # Requires 1 token, name of label to set
+    label_name = '_' + eval_keyword(token_list[0])
+    labels[label_name] = current_line
+
+def _goto(token_list):
+    global current_line
+
+    # Requires 1 token, name of label to goto
+    label_name = '_' + eval_keyword(token_list[0])
+    current_line = labels[label_name]
+
+def _input(token_list):
+    # If 0 tokens, accept input and place on stack
+    # If 1 token, accept input and place in var
+    num_tokens = len(token_list)
+    if num_tokens == 0:
+        result = input()
+        stack.append(result)
+    elif num_tokens == 1:
+        result = input()
+        scope[eval_keyword(token_list[1])] = result
+    else:
+        raise ValueError
+
+def eval_value(token):
+    # Evaluate a value: a number, string, variable, or list of values
+    if not token or token[0] is None:
+        return eval_number(token)
+
+    value_type = eval_keyword(token[0])
+    if value_type == '#':
+        return eval_list(token)
+    elif value_type == '"':
+        return eval_string(token)
+    else:
+        return eval_variable(token)
+
+def eval_list(token):
+    # Evaluate list of values, token[0] should be '#'
+    return [eval_value(item) for item in token[1:]]
+
+def eval_number(token):
+    # Integer values come from the size of the list
+    # Decimal values have an integer part and a decimal part separated by '.'
+    try:
+        # Evaluate decimal
+        int_part = token.index([])
+        decimal_start = len(token) - token[::-1].index([])
+        leading_zeros = decimal_start - int_part - 1
+        decimal_part = len(token) - decimal_start
+        return float(str(int_part) + '.' + '0' * leading_zeros + str(decimal_part))
+    except ValueError:
+        # Evaluate int
+        return eval_int(token)
+
+def eval_int(token):
+    return len(token)
+
+def eval_string(token):
+    # Evaluate string from list of numbers, token[0] should be '"'
+    return ''.join(chr(eval_int(c)) for c in token[1:])
+
+def eval_variable(token):
+    # Variables are strings without surrounding '"'
+    # Special variables: True, False
+    variable = eval_keyword(token)
+    if variable in reserved_variables:
+        return reserved_variables[variable]
+    elif variable in scope:
+        return scope[variable]
+    else:
+        # TODO make custom errors
+        raise KeyError
+
+def eval_keyword(token):
+    return ''.join(chr(eval_int(c)) for c in token)
+
+def interpret_type_cast(t, token_list):
+    # If 0 tokens, cast from stack then replace
+    # If 1 token, cast then place on stack
+    # If 2 tokens, cast then place in var
+    num_tokens = token_list
+    if num_tokens == 0:
+        result = t(stack.pop())
+        stack.append(result)
+    elif num_tokens == 1:
+        result = t(eval_value(token_list[0]))
+        stack.append(result)
+    elif num_tokens == 2:
+        result = t(eval_value(token_list[0]))
+        scope[eval_keyword(token_list[1])] = result
+
+def interpret_unary_op(op, token_list):
+    # If 0 tokens, apply op from stack then replace
+    # If 1 token, apply op then place on stack
+    # If 2 tokens, apply op and place in var
+    num_tokens = len(token_list)
+    if num_tokens == 0:
+        result = op(stack.pop())
+        stack.append(result)
+    elif num_tokens == 1:
+        result = op(eval_value(token_list[0]))
+        stack.append(result)
+    elif num_tokens == 2:
+        result = op(eval_value(token_list[0]))
+        scope[eval_keyword(token_list[1])] = result
+    else:
+        raise ValueError
+
+def interpret_binary_op(op, token_list):
+    # If 0 tokens, apply op from stack then replace
+    # If 2 tokens, apply op then place on stack
+    # If 3 tokens, apply op and place in var
+    num_tokens = len(token_list)
+    if num_tokens == 0:
+        result = op(stack.pop(), stack.pop())
+        stack.append(result)
+    elif num_tokens == 2:
+        result = op(eval_value(token_list[0]), eval_value(token_list[1]))
+        stack.append(result)
+    elif num_tokens == 3:
+        result = op(eval_value(token_list[0]), eval_value(token_list[1]))
+        scope[eval_keyword(token_list[2])] = result
+    else:
+        raise ValueError
+
+def interpret_line(token_list):
+    statement = eval_keyword(token_list[0])
+    if statement in reserved_functions:
+        reserved_functions[statement](token_list[1:])
+
+def interpret_lines(line_list):
+    global current_line
+
+    EOF = len(line_list)
+    while current_line != EOF:
+        line = line_list[current_line]
+        interpret_line(line)
+        current_line += 1
+
+def read_lines(file):
+    lines = []
+    with open(file) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            line = f'[{line}]'
+            line = line.replace('] [', '], [')
+            line = line.replace('][', '], [')
+            line = line.replace('"', '\\"')
+            line = line.replace('\'', '"')
+            line = line.replace('None', 'null')
+            line = json.loads(line)
+            lines.append(line)
+    return lines
+
+
+if __name__ == '__main__':
+    try:
+        file = sys.argv[1]
+    except IndexError:
+        print('USAGE: nonescript <filename> [args]')
+        sys.exit(0)
+
+    current_line = 0
+    labels = {}
+    scope = {}
+    stack = sys.argv[2:] if len(sys.argv) > 2 else []
+
+    functions_list = inspect.getmembers(sys.modules['__main__'], inspect.isfunction)
+    reserved_functions = {f[0][1:]: f[1] for f in functions_list if f[0].startswith('_') and not f[0].startswith('__')}
+    reserved_variables = {'True': True, 'False': False}
+
+    type_casts = {
+        'int': int,
+        'float': float,
+        'bool': bool,
+        'str': str
+    }
+    unary_operators = {
+        'neg': operator.neg,
+        'abs': operator.abs,
+        'not': operator.not_
+    }
+    binary_operators = {
+        'lt': operator.lt,
+        'le': operator.le,
+        'eq': operator.eq,
+        'ne': operator.ne,
+        'ge': operator.ge,
+        'gt': operator.gt,
+        'add': operator.add,
+        'sub': operator.sub,
+        'mul': operator.mul,
+        'div': operator.truediv,
+        'fdiv': operator.floordiv,
+        'pow': operator.pow
+    }
+
+    lines = read_lines(file)
+    interpret_lines(lines)
